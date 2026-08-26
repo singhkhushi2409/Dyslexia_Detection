@@ -211,13 +211,18 @@ def get_feature_array(path):
 # MODEL SCORING
 # =========================================================
 
-def score(input_features):
+@st.cache_resource
+def load_model():
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(
             "handwriting_model.pkl was not found at:\n" + MODEL_PATH
         )
 
-    model = joblib.load(MODEL_PATH)
+    return joblib.load(MODEL_PATH)
+
+
+def score(input_features):
+    model = load_model()
     features = pd.DataFrame([input_features], columns=MODEL_FEATURE_COLUMNS)
 
     if hasattr(model, "feature_names_in_"):
