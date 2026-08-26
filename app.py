@@ -269,7 +269,7 @@ with tab1:
         """
     )
 
-    home_image_path = os.path.join(BASE_DIR, "images", "img1.jpg")
+    home_image_path = os.path.join(BASE_DIR, "home_infographic.jpg")
     if os.path.exists(home_image_path):
         st.image(home_image_path, width=600)
     else:
