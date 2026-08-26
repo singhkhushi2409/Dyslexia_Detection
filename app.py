@@ -212,7 +212,10 @@ def get_feature_array(path):
 # MODEL SCORING
 # =========================================================
 
-@st.cache_resource
+model_cache = getattr(st, "cache_resource", st.experimental_singleton)
+
+
+@model_cache
 def load_model():
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(
