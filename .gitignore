@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+.streamlit/
+temp.jpg
+.DS_Store
+Thumbs.db
