@@ -1,6 +1,7 @@
 import streamlit as st
 from PIL import Image
 import os
+import tempfile
 import pandas as pd
 import numpy as np
 import cv2
@@ -390,7 +391,11 @@ with tab2:
 
     if image is not None:
         image_uploaded = Image.open(image)
-        temp_path = os.path.join(BASE_DIR, "temp_handwriting.jpg")
+        temp_file = tempfile.NamedTemporaryFile(
+            suffix=".jpg", delete=False
+        )
+        temp_path = temp_file.name
+        temp_file.close()
         image_uploaded.save(temp_path)
 
         st.write(f"Selected image: {image.name}")
@@ -445,6 +450,9 @@ with tab2:
             except Exception as e:
                 st.error("Prediction failed.")
                 st.exception(e)
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
 
 
 # =========================================================
