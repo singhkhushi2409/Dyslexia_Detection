@@ -20,6 +20,40 @@ FEATURE_COLUMNS = [
 ]
 
 
+def remove_horizontal_rules(binary):
+    _, image_width = binary.shape
+    kernel_width = max(40, image_width // 10)
+    line_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_width, 1))
+    horizontal_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, line_kernel)
+    return cv2.subtract(binary, horizontal_lines)
+
+
+def group_components_by_line(components):
+    if not components:
+        return []
+    median_height = float(np.median([component["h"] for component in components]))
+    center_tolerance = max(8.0, median_height * 0.75)
+    lines = []
+    for component in sorted(components, key=lambda item: item["y"] + item["h"] / 2):
+        center = component["y"] + component["h"] / 2
+        matching_line = next(
+            (line for line in lines if abs(center - line["center"]) <= center_tolerance),
+            None,
+        )
+        if matching_line is None:
+            lines.append({"center": center, "components": [component]})
+        else:
+            matching_line["components"].append(component)
+            matching_line["center"] = float(np.mean([
+                item["y"] + item["h"] / 2
+                for item in matching_line["components"]
+            ]))
+    return [
+        sorted(line["components"], key=lambda item: item["x"])
+        for line in sorted(lines, key=lambda item: item["center"])
+    ]
+
+
 def extract_features(path):
     image = cv2.imread(path)
     if image is None:
@@ -27,6 +61,7 @@ def extract_features(path):
     gray = cv2.GaussianBlur(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (3, 3), 0)
     _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    binary = remove_horizontal_rules(binary)
     height, width = binary.shape
     _, _, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
     components = [
@@ -39,13 +74,20 @@ def extract_features(path):
     ]
     if len(components) < 2:
         raise ValueError("Not enough handwriting detected. Upload a clearer sample.")
-    components.sort(key=lambda item: item["x"])
+    lines = group_components_by_line(components)
+    components = [component for line in lines for component in line]
     heights = np.array([item["h"] for item in components], dtype=float)
     widths = np.array([item["w"] for item in components], dtype=float)
-    baselines = np.array([item["y"] + item["h"] for item in components], dtype=float)
+    line_baseline_drifts = [
+        np.std([item["y"] + item["h"] for item in line])
+        for line in lines
+        if len(line) > 1
+    ]
+    baseline_drift = float(np.mean(line_baseline_drifts)) if line_baseline_drifts else 0.0
     gaps = np.array([
         right["x"] - left["x"] - left["w"]
-        for left, right in zip(components, components[1:])
+        for line in lines
+        for left, right in zip(line, line[1:])
         if right["x"] - left["x"] - left["w"] >= 0
     ], dtype=float)
     mean_gap = float(np.mean(gaps)) if len(gaps) else 0.0
@@ -59,17 +101,23 @@ def extract_features(path):
         if abs(moments["mu02"]) > 1e-6:
             slants.append(np.degrees(0.5 * np.arctan2(
                 2 * moments["mu11"], moments["mu20"] - moments["mu02"])))
-    overlaps = sum(right["x"] < left["x"] + left["w"] for left, right in zip(components, components[1:]))
+    adjacent_pairs = sum(max(0, len(line) - 1) for line in lines)
+    overlaps = sum(
+        right["x"] < left["x"] + left["w"]
+        for line in lines
+        for left, right in zip(line, line[1:])
+    )
+    line_starts = [line[0]["x"] for line in lines]
     return [
         np.count_nonzero(binary) / (height * width) * 100,
         float(len(components)), float(np.mean(heights)),
         float(np.std(heights) / (np.mean(heights) + 1e-6) * 100),
         float(np.mean(widths)), float(np.std(widths) / (np.mean(widths) + 1e-6) * 100),
-        float(np.std(baselines)), mean_gap, gap_variation,
+        baseline_drift, mean_gap, gap_variation,
         float(np.mean(ink_region) * 2) if len(ink_region) else 0.0,
         float(np.std(slants)) if slants else 0.0,
-        float(np.std([item["x"] for item in components])),
-        overlaps / (len(components) - 1) * 100,
+        float(np.std(line_starts)) if len(line_starts) > 1 else 0.0,
+        overlaps / adjacent_pairs * 100 if adjacent_pairs else 0.0,
     ]
 
 
@@ -96,9 +144,10 @@ def predict():
         frame = pd.DataFrame([features], columns=FEATURE_COLUMNS)
         if hasattr(model, "feature_names_in_"):
             frame = frame[model.feature_names_in_]
-        prediction = int(model.predict(frame)[0])
         probabilities = model.predict_proba(frame)[0]
         probability = next(float(value) * 100 for label, value in zip(model.classes_, probabilities) if int(label) == 1)
+        threshold = float(getattr(model, "classification_threshold", 0.50))
+        prediction = int(probability / 100 >= threshold)
         return jsonify({
             "prediction": prediction,
             "dyslexiaProbability": probability,

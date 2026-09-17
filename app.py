@@ -49,6 +49,52 @@ st.markdown(
 # HANDWRITING 13-FEATURE EXTRACTION
 # =========================================================
 
+def _remove_horizontal_rules(binary):
+    image_height, image_width = binary.shape
+    kernel_width = max(40, image_width // 10)
+    line_kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (kernel_width, 1)
+    )
+    horizontal_lines = cv2.morphologyEx(
+        binary,
+        cv2.MORPH_OPEN,
+        line_kernel
+    )
+    return cv2.subtract(binary, horizontal_lines)
+
+
+def _group_components_by_line(components):
+    if not components:
+        return []
+
+    median_height = float(np.median([component["h"] for component in components]))
+    center_tolerance = max(8.0, median_height * 0.75)
+    lines = []
+
+    for component in sorted(components, key=lambda item: item["y"] + item["h"] / 2):
+        center = component["y"] + component["h"] / 2
+        matching_line = None
+        for line in lines:
+            if abs(center - line["center"]) <= center_tolerance:
+                matching_line = line
+                break
+
+        if matching_line is None:
+            lines.append({"center": center, "components": [component]})
+        else:
+            matching_line["components"].append(component)
+            matching_line["center"] = float(np.mean([
+                item["y"] + item["h"] / 2
+                for item in matching_line["components"]
+            ]))
+
+    return [
+        sorted(line["components"], key=lambda item: item["x"])
+        for line in sorted(lines, key=lambda item: item["center"])
+    ]
+
+
 def extract_handwriting_features(path):
     image = cv2.imread(path)
     if image is None:
@@ -66,6 +112,7 @@ def extract_handwriting_features(path):
 
     kernel = np.ones((2, 2), np.uint8)
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+    binary = _remove_horizontal_rules(binary)
     image_height, image_width = binary.shape
 
     # 1. INK DENSITY
@@ -96,7 +143,8 @@ def extract_handwriting_features(path):
             "Not enough handwriting detected. Please upload a clearer handwriting image."
         )
 
-    components.sort(key=lambda c: c["x"])
+    lines = _group_components_by_line(components)
+    components = [component for line in lines for component in line]
 
     # 3. MEAN LETTER HEIGHT & VARIATION
     heights = np.array([c["h"] for c in components], dtype=float)
@@ -109,17 +157,20 @@ def extract_handwriting_features(path):
     width_variation = (np.std(widths) / (mean_width + 1e-6)) * 100
 
     # 5. BASELINE DRIFT
-    baseline_positions = np.array([c["y"] + c["h"] for c in components], dtype=float)
-    baseline_drift = np.std(baseline_positions)
+    line_baseline_drifts = [
+        np.std([component["y"] + component["h"] for component in line])
+        for line in lines
+        if len(line) > 1
+    ]
+    baseline_drift = float(np.mean(line_baseline_drifts)) if line_baseline_drifts else 0.0
 
     # 6. SPACING & SPACING VARIATION
     spacings = []
-    for i in range(len(components) - 1):
-        current = components[i]
-        next_component = components[i + 1]
-        gap = next_component["x"] - (current["x"] + current["w"])
-        if gap >= 0:
-            spacings.append(gap)
+    for line in lines:
+        for current, next_component in zip(line, line[1:]):
+            gap = next_component["x"] - (current["x"] + current["w"])
+            if gap >= 0:
+                spacings.append(gap)
 
     if len(spacings) > 0:
         spacings = np.array(spacings, dtype=float)
@@ -149,15 +200,18 @@ def extract_handwriting_features(path):
     slant_variation = np.std(slant_angles) if len(slant_angles) > 0 else 0.0
 
     # 9. MARGIN ALIGNMENT
-    left_positions = np.array([c["x"] for c in components], dtype=float)
-    margin_alignment = np.std(left_positions)
+    line_starts = np.array([line[0]["x"] for line in lines], dtype=float)
+    margin_alignment = np.std(line_starts) if len(line_starts) > 1 else 0.0
 
     # 10. OVERLAP / COLLISION
+    adjacent_pairs = sum(max(0, len(line) - 1) for line in lines)
     overlap_count = sum(
-        1 for i in range(len(components) - 1)
-        if components[i + 1]["x"] < components[i]["x"] + components[i]["w"]
+        1
+        for line in lines
+        for current, next_component in zip(line, line[1:])
+        if next_component["x"] < current["x"] + current["w"]
     )
-    overlap_ratio = (overlap_count / (len(components) - 1)) * 100
+    overlap_ratio = (overlap_count / adjacent_pairs) * 100 if adjacent_pairs else 0.0
 
     return [
         ink_density, float(len(components)), mean_height, height_variation,
@@ -232,7 +286,6 @@ def score(input_features):
     if hasattr(model, "feature_names_in_"):
         features = features[model.feature_names_in_]
 
-    prediction = int(model.predict(features)[0])
     probabilities = model.predict_proba(features)[0]
     classes = model.classes_
 
@@ -241,6 +294,8 @@ def score(input_features):
         if int(cls) == 1:
             dyslexia_probability = float(probability) * 100
 
+    threshold = float(getattr(model, "classification_threshold", 0.50))
+    prediction = int(dyslexia_probability / 100 >= threshold)
     return prediction, dyslexia_probability
 
 
@@ -385,6 +440,9 @@ with tab2:
         and evaluates classification likelihood using our trained machine learning model.
         """
     )
+    st.info(
+        "Use a clear photo of natural handwriting on plain paper. Do not use calligraphy, printed text, advertisements, worksheets, or images containing pens and other objects."
+    )
 
     image = st.file_uploader(
         "Upload the handwriting sample",
@@ -436,10 +494,11 @@ with tab2:
                 st.progress(score_value)
                 st.metric("Dyslexia Probability", f"{dyslexia_score:.2f}%")
 
-                if dyslexia_score >= 70:
-                    st.error("High Model Confidence (Score >= 70%)")
+                decision_threshold = float(getattr(load_model(), "classification_threshold", 0.50)) * 100
+                if dyslexia_score >= decision_threshold:
+                    st.error(f"Model decision threshold reached (Score >= {decision_threshold:.0f}%)")
                 elif dyslexia_score >= 40:
-                    st.warning("Moderate Model Confidence (40% - 69%)")
+                    st.warning(f"Below model decision threshold ({decision_threshold:.0f}%), but not a low score")
                 else:
                     st.success("Low Model Confidence (Score < 40%)")
 

@@ -158,5 +158,6 @@ print(classification_report(y_test, final_preds, target_names=["Non-Dyslexic", "
 
 # Save winning model
 model_path = os.path.join(BASE_DIR, "handwriting_model.pkl")
+best_model.classification_threshold = best_threshold
 joblib.dump(best_model, model_path)
 print(f"[SUCCESS] Saved winning model ({best_name}) to: {model_path}")

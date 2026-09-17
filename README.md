@@ -27,10 +27,11 @@ NeuroLearn is an educational and research-oriented Streamlit module that analyze
 The Writing tab accepts `.jpg`, `.jpeg`, and `.png` files. The application then:
 
 1. Converts the image to grayscale, applies a $3 \times 3$ Gaussian blur, and uses inverted Otsu thresholding.
-2. Cleans the binary foreground with a $2 \times 2$ morphological opening.
+2. Cleans the binary foreground with a $2 \times 2$ morphological opening and removes detected long horizontal notebook rules.
 3. Finds 8-connected components and keeps components with area at least 20 pixels, height at least 5 pixels, and width at least 2 pixels.
-4. Calculates the 13 features documented below.
-5. Loads `handwriting_model.pkl`, creates a named feature row, and returns a class prediction plus the model probability for class `1` (`Dyslexic`).
+4. Groups components by writing row before calculating baseline, spacing, margin, and collision features.
+5. Calculates the 13 features documented below.
+6. Loads `handwriting_model.pkl`, creates a named feature row, and returns a class prediction plus the model probability for class `1` (`Dyslexic`).
 
 The model is loaded at prediction time from the repository root. It is not trained when the Streamlit app starts.
 
@@ -39,7 +40,7 @@ The model is loaded at prediction time from the repository root. It is not train
 - Upload and preview a handwriting image.
 - Extract and display the 13 calculated feature values.
 - Produce a binary model verdict and dyslexic-class probability.
-- Train candidate tree-based classifiers from `handwriting_features.csv` with a stratified 80/20 split.
+- Regenerate `handwriting_features.csv` from the labeled image folders and train candidate tree-based classifiers with a stratified 80/20 split.
 - Persist the selected estimator to `handwriting_model.pkl` with Joblib.
 
 ## Architecture
@@ -77,7 +78,7 @@ The model is loaded at prediction time from the repository root. It is not train
 
 Training path:
 handwriting_features.csv -> stratified train/test split -> candidate models
-                           -> 5-fold threshold calibration -> best estimator
+                           -> 5-fold threshold calibration -> best estimator + threshold
                            -> handwriting_model.pkl
 ```
 
@@ -180,10 +181,11 @@ Open the local URL printed by Streamlit, select the **Writing** tab, upload a cl
 With the virtual environment active:
 
 ```bash
+python generate_handwriting_features.py
 python train_handwriting.py
 ```
 
-The script reads `handwriting_features.csv`, uses the 13 columns in the exact schema below, prints candidate metrics and a classification report, and saves the selected model as `handwriting_model.pkl`.
+The first script regenerates features with the current preprocessing from `data/non_dyslexic` and `data/dyslexic`. The second script uses the 13 columns in the exact schema below, prints candidate metrics and a classification report, saves the selected model as `handwriting_model.pkl`, and stores the selected classification threshold in the model artifact.
 
 ```text
 ink_density, connected_components, mean_height, height_variation,
