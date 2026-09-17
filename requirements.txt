@@ -4,7 +4,7 @@ streamlit
 Pillow
 pandas
 numpy
-opencv-python
+opencv-python<5
 pytesseract
 joblib
 scikit-learn
@@ -13,3 +13,6 @@ pyttsx3
 textblob
 language-tool-python
 abydos
+fastapi
+uvicorn
+requests
